@@ -75,6 +75,17 @@ FROM teams
 WHERE yearid >= 1920
 GROUP BY decade 
 ORDER BY decade;
+--
+WITH decade_cte AS (
+	SELECT generate_series(1920, 2020, 10) AS beginning_of_decade
+)
+SELECT ROUND(SUM(hr) * 1.0 / (SUM(g) / 2), 2) AS hr_per_game,							   ROUND(SUM(so) * 1.0 / (SUM(g) / 2), 2) AS so_per_game, 							   beginning_of_decade::text || 's' AS decade
+FROM teams
+INNER JOIN decade_cte
+ON yearid BETWEEN beginning_of_decade AND beginning_of_decade + 9
+WHERE yearid >= 1920
+GROUP BY decade
+ORDER BY decade;
 -- It appears that both strikeouts/game and home runs/game increased over time up until the 1970's and 1980's, when they declined. Then starting in the 1990's they went back up and increased by decade.
 
 -- 4) Find the player who had the most success stealing bases in 2016, where success is measured as the percentage of stolen base attempts which are successful. (A stolen base attempt results either in a stolen base or being caught stealing.) Consider only players who attempted at least 20 stolen bases. Report the players' names, number of stolen bases, number of attempts, and stolen base percentage.
@@ -86,22 +97,58 @@ WHERE yearid = 2016
 AND cs + sb >= 20
 GROUP BY namefirst, namelast, cs + sb
 ORDER BY stolen_base_percentage DESC;
+--
+WITH full_batting AS (
+					  SELECT playerid, SUM(sb) AS sb, SUM(cs) AS cs, SUM(sb) + SUM(cs) 						 AS attempts
+					  FROM batting
+					  WHERE yearid = 2016
+	                  GROUP BY playerid)
+SELECT namefirst || ' ' || namelast AS fullname, sb, attempts, ROUND(sb*1.0 / attempts, 2) AS sb_percentage
+FROM full_batting
+INNER JOIN people
+USING(playerid)
+WHERE attempts >= 20
+ORDER BY sb_percentage DESC;
 
 -- 5) From 1970 to 2016, what is the largest number of wins for a team that did not win the world series? What is the smallest number of wins for a team that did win the world series? Doing this will probably result in an unusually small number of wins for a world series champion; determine why this is the case. Then redo your query, excluding the problem year. How often from 1970 to 2016 was it the case that a team with the most wins also won the world series? What percentage of the time?
-SELECT name AS team, teams.w AS wins, teamidwinner AS world_series_winner
+SELECT name, yearid, w AS max_wins, wswin as world_series_winner
 FROM teams
-INNER JOIN seriespost
-USINg(yearid)
-WHERE yearid BETWEEN 1970 AND 2016
-GROUP BY name, teamidwinner, teams.w
-ORDER BY teams.w ASC;
--- Most wins = 116, Fewest wins = .
-
-SELECT *
-FROM seriespost
+WHERE yearid BETWEEN 1970 AND 2016 AND wswin = 'N'
+GROUP BY name, yearid, w, wswin
+ORDER BY max_wins DESC
 LIMIT 5;
--- 6) Which managers have won the TSN Manager of the Year award in both the National League (NL) and the American League (AL)? Give their full name and the teams that they were managing when they won the award.
+-- The Seattle Mariners had 116 wins in 2001 but did not win the World Series.
+SELECT name, yearid, w AS min_wins, wswin as world_series_winner
+FROM teams
+WHERE yearid BETWEEN 1970 AND 2016 AND wswin = 'Y'
+GROUP BY name, yearid, min_wins, wswin
+ORDER BY min_wins
+LIMIT 5;
+-- The Los Angeles Dodgers had 63 wins in 1981 and did win the World Series. this was a strike year for MLB.
+WITH wins_by_year AS (SELECT yearid, franchid, w AS wins, wswin as world_series_win,
+					  RANK() OVER(PARTITION BY yearid ORDER BY w DESC) AS       						  Rank_by_Total_Wins
+					  FROM teams
+					  WHERE yearid BETWEEN 1970 AND 2016
+					  AND yearid <> 1981
+					  ORDER BY yearid)
+SELECT yearid, franchid, world_series_win
+FROM wins_by_year
+WHERE wins_by_year.Rank_by_Total_Wins = 1 AND world_series_win = 'Y'
+ORDER BY yearid;
 
+-- 6) Which managers have won the TSN Manager of the Year award in both the National League (NL) and the American League (AL)? Give their full name and the teams that they were managing when they won the award.
+WITH tmoy_nl&al AS (
+					SELECT playerid, awardid
+					FROM awardsmanagers
+					WHERE awardid = 'TSN Manager of the Year' AND lgid = 'NL' OR lgid = 					'AL') 				
+SELECT namefirst, namelast, teams.name
+FROM people
+INNER JOIN teams
+USING(playerid);
+--
+SELECT *
+FROM awardsmanagers
+LIMIT 5;
 -- 7) Which pitcher was the least efficient in 2016 in terms of salary / strikeouts? Only consider pitchers who started at least 10 games (across all teams). Note that pitchers often play for more than one team in a season, so be sure that you are counting all stats for each player.
 
 -- 8) Find all players who have had at least 3000 career hits. Report those players' names, total number of hits, and the year they were inducted into the hall of fame (If they were not inducted into the hall of fame, put a null in that column.) Note that a player being inducted into the hall of fame is indicated by a 'Y' in the inducted column of the halloffame table.
