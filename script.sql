@@ -114,6 +114,12 @@ WHERE yearid BETWEEN 1970 AND 2016 AND wswin = 'N'
 GROUP BY name, yearid, w, wswin
 ORDER BY max_wins DESC
 LIMIT 5;
+
+SELECT teamid, yearid, w, wswin
+FROM teams
+WHERE wswin = 'N'
+AND yearid BETWEEN 1970 AND 2016 
+ORDER BY w DESC;
 -- The Seattle Mariners had 116 wins in 2001 but did not win the World Series.
 SELECT name, yearid, w AS min_wins, wswin as world_series_winner
 FROM teams
@@ -121,9 +127,16 @@ WHERE yearid BETWEEN 1970 AND 2016 AND wswin = 'Y'
 GROUP BY name, yearid, min_wins, wswin
 ORDER BY min_wins
 LIMIT 5;
+
+SELECT teamid, yearid, w, wswin
+FROM teams
+WHERE wswin = 'Y'
+AND yearid BETWEEN 1970 AND 2016 
+AND yearid <> 1981
+ORDER BY w DESC;
 -- The Los Angeles Dodgers had 63 wins in 1981 and did win the World Series. This was a strike year for MLB.
-WITH wins_by_year AS (SELECT yearid, franchid, w AS wins, wswin as world_series_win,
-					  RANK() OVER(PARTITION BY yearid ORDER BY w DESC) AS       						  Rank_by_Total_Wins
+WITH wins_by_year AS (SELECT yearid, franchid, w AS wins, wswin as     							  world_series_win,
+					  RANK() OVER(PARTITION BY yearid ORDER BY w DESC) AS       					  Rank_by_Total_Wins
 					  FROM teams
 					  WHERE yearid BETWEEN 1970 AND 2016
 					  AND yearid <> 1981
@@ -132,67 +145,106 @@ SELECT yearid, franchid, world_series_win
 FROM wins_by_year
 WHERE wins_by_year.Rank_by_Total_Wins = 1 AND world_series_win = 'Y'
 ORDER BY yearid;
+--
+WITH top_wins AS (SELECT yearid, MAX(w) AS w
+				  FROM teams
+				  WHERE yearid between 1970 AND 2016
+				  GROUP BY yearid), 
+	 top_wins_teams AS (SELECT teamid, yearid, w, wswin
+						FROM teams
+						INNER JOIN top_wins
+						USING(yearid, w))
+SELECT SUM(CASE WHEN wswin = 'Y' THEN 1 ELSE 0 END), AVG(CASE WHEN wswin = 'Y' THEN 1 ELSE 0 END)
+FROM top_wins_teams
+WHERE yearid <> 1981 AND wswin IS NOT NULL;
 
 -- 6) Which managers have won the TSN Manager of the Year award in both the National League (NL) and the American League (AL)? Give their full name and the teams that they were managing when they won the award.
-WITH tmoy_nl_al AS (
-					SELECT playerid, lgid, awardid 
+WITH tmoy_nl_al AS (SELECT playerid
 					FROM awardsmanagers
 					WHERE awardid = 'TSN Manager of the Year' AND lgid = 'NL' 
-					OR awardid = 'TSN Manager of the Year' AND 'lgid' = 'AL'
-) 		
-SELECT namefirst, namelast, teams.name
+					OR awardid = 'TSN Manager of the Year' AND lgid = 'AL'
+					GROUP BY playerid
+					HAVING COUNT(DISTINCT lgid) = 2), 		
+     year_won AS (SELECT playerid, yearid
+				  FROM awardsmanagers
+				  WHERE (awardid = 'TSN Manager of the Year' AND lgid = 'NL' 
+			      OR awardid = 'TSN Manager of the Year' AND lgid = 'AL')
+				  AND playerid IN (SELECT playerid
+				  FROM tmoy_nl_al)) 
+SELECT playerid, namefirst, namelast, teams.name as team
 FROM people
-INNER JOIN teams
-USING(playerid);
---
-SELECT *
-FROM awardsmanagers
-LIMIT 5;
--- 7) Which pitcher was the least efficient in 2016 in terms of salary / strikeouts? Only consider pitchers who started at least 10 games (across all teams). Note that pitchers often play for more than one team in a season, so be sure that you are counting all stats for each player.				
-WITH salary_strikeouts AS (
-					       SELECT pitching.yearid, playerid, salary/so AS 						               dollars_per_strikeout
-					       FROM salaries
-					       INNER JOIN pitching
-						   USING(playerid);
-)
-SELECT namefirst, namelast, dollars_per_strikeout
-FROM people
-INNER JOIN salary_strikeouts
+INNER JOIN managers
 USING(playerid)
-GROUP BY namefirst, namelast
-ORDER BY dollars_per_strikeout;
+INNER JOIN year_won
+USING(playerid, yearid)
+INNER JOIN teams
+USING(teamid, yearid);
+
+-- 7) Which pitcher was the least efficient in 2016 in terms of salary / strikeouts? Only consider pitchers who started at least 10 games (across all teams). Note that pitchers often play for more than one team in a season, so be sure that you are counting all stats for each player.				
+--
+WITH full_pitching AS (
+					   SELECT playerid, SUM(so) AS so
+	                   FROM pitching
+	                   WHERE yearid = 2016
+	                   GROUP BY playerid
+	                   HAVING SUM(gs) >= 10), full_salary AS 
+					   (SELECT playerid, SUM(salary) AS salary
+					   FROM salaries
+					   WHERE yearid = 2016
+				       GROUP BY playerid)
+SELECT	namefirst || ' ' || namelast AS fullname, salary::numeric::MONEY / so AS so_efficiency
+FROM full_pitching
+NATURAL JOIN full_salary
+INNER JOIN people
+USING(playerid)
+ORDER BY so_efficiency DESC;
 
 -- 8) Find all players who have had at least 3000 career hits. Report those players' names, total number of hits, and the year they were inducted into the hall of fame (If they were not inducted into the hall of fame, put a null in that column.) Note that a player being inducted into the hall of fame is indicated by a 'Y' in the inducted column of the halloffame table.
-SELECT namefirst, namelast, sum(h) AS total_hits, halloffame.yearid
-FROM people
-INNER JOIN batting
-USING(playerid)
-INNER JOIN halloffame
-USING(playerid)
-WHERE h >= 3000 AND inducted = 'Y'
-GROUP BY namefirst, namelast, halloffame.yearid
-ORDER BY total_hits DESC;
+WITH career_hits AS(
+	                SELECT DISTINCT playerid, SUM(h) AS hits 
+	                FROM batting
+	                GROUP BY playerid
+	                HAVING SUM(h) >= 3000
+	                ORDER BY 2 DESC)
+SELECT DISTINCT ON (namefirst, namelast) namefirst, namelast, ch.hits, 
+CASE WHEN hf.inducted = 'Y' THEN 'Y' ELSE NULL END AS hf_inducted, 
+CASE WHEN hf.inducted = 'Y' THEN hf.yearid END AS hf_yearid
+FROM people p INNER JOIN career_hits ch
+USING (playerid)
+LEFT JOIN halloffame hf 
+USING (playerid)
+ORDER BY namefirst, namelast, hf_yearid desc NULLS LAST
 
 -- 9) Find all players who had at least 1,000 hits for two different teams. Report those players' full names.
-WITH 1k_hits_2teams AS (
-					    SELECT playerid, teamid, SUM(h) >= 1000 AS one_thousand_hits
-					    FROM batting
-						WHERE teamid > 1)
-SELECT namefirst, namelast, 
-FROM people
-INNER JOIN 1k_hits_2teams
-USING(playerid)
-GROUP BY namefirst, namelast, 
+--
+WITH thousandaires AS (
+	                   SELECT playerid, teamid, SUM(h) AS total_hits
+	                   FROM batting
+	                   GROUP BY playerid, teamid
+	                   HAVING SUM(H) >= 1000), 
+	  double_thousandaires AS (SELECT playerid
+							  FROM thousandaires
+							  GROUP BY playerid
+							  HAVING COUNT(DISTINCT teamid) = 2)
+SELECT namefirst || ' ' || namelast AS full_name
+FROM double_thousandaires
+NATURAL JOIN people;
 
 -- 10) Find all players who hit their career highest number of home runs in 2016. Consider only players who have played in the league for at least 10 years, and who hit at least one home run in 2016. Report the players' first and last names and the number of home runs they hit in 2016.
-SELECT namefirst, namelast, MAX(SUM(hr)) AS highest_career_hr
+WITH career_highest_hr AS (
+						   SELECT playerid, hr
+						   FROM batting
+						   WHERE hr >= 1 AND yearid = 2016	
+						   GROUP BY playerid, hr
+                           ORDER BY hr DESC						    
+)
+SELECT namefirst, namelast, hr
 FROM people
-INNER JOIN batting
+INNER JOIN career_highest_hr
 USING(playerid)
-WHERE yearid = 2016 AND hr >= 1 AND (EXTRACT year FROM debut) - (EXTRACT year FROM finalgame) >+ 10
-GROUP BY namefirst, namelast
-ORDER BY hihgest_career_hr;
-
+WHERE EXTRACT(year from finalgame::date) - EXTRACT(year from debut::date) >= 10
+GROUP BY namefirst, namelast, hr
+ORDER BY hr DESC;
 -- After finishing the above questions, here are some open-ended questions to consider.
 
 -- Open-ended questions
